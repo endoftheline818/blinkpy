@@ -180,16 +180,9 @@ class BlinkLiveStream:
         try:
             _LOGGER.debug("Starting copy from target to clients")
             while not self.target_reader.at_eof():
-                # Read header from the target server
-                data = await self.target_reader.read(9)
-
-                # Check if we have enough data for the header
-                if len(data) < 9:
-                    _LOGGER.warning(
-                        "Insufficient data for header: %d bytes, expected 9",
-                        len(data),
-                    )
-                    break
+                # Read the complete IMMI header. StreamReader.read() may return
+                # fewer bytes than requested when TCP data is fragmented.
+                data = await self.target_reader.readexactly(9)
 
                 # Handle the 9-byte IMMI protocol header
                 msgtype = data[0]
@@ -207,17 +200,8 @@ class BlinkLiveStream:
                     _LOGGER.debug("Invalid payload length: %d", payload_length)
                     continue
 
-                # Read payload from the target server
-                data = await self.target_reader.read(payload_length)
-
-                # Check if we have enough data for the payload
-                if len(data) < payload_length:
-                    _LOGGER.warning(
-                        "Insufficient data for payload: %d bytes, expected %d",
-                        len(data),
-                        payload_length,
-                    )
-                    break
+                # Read the complete payload for the same reason as the header.
+                data = await self.target_reader.readexactly(payload_length)
 
                 # Skip packets other than msgtype 0x00 (regular video stream)
                 if msgtype != 0x00:
@@ -238,6 +222,15 @@ class BlinkLiveStream:
 
                 # Yield control to the event loop
                 await asyncio.sleep(0)
+        except asyncio.IncompleteReadError as e:
+            if e.partial:
+                _LOGGER.warning(
+                    "Livestream ended with an incomplete read: %d of %d bytes",
+                    len(e.partial),
+                    e.expected,
+                )
+            else:
+                _LOGGER.debug("Livestream reached EOF")
         except ssl.SSLError as e:
             if e.reason != "APPLICATION_DATA_AFTER_CLOSE_NOTIFY":
                 _LOGGER.exception("SSL error while receiving data")
@@ -281,12 +274,12 @@ class BlinkLiveStream:
                     ]
                     # fmt: on
 
-                    # Send keep-alive packet to the target server
+                    # Send keep-alive packet to the server
                     _LOGGER.debug("Sending keep-alive packet")
                     self.target_writer.write(bytearray(keepalive_packet))
                     await self.target_writer.drain()
 
-                # Send latency-stats packet to the target server
+                # Send latency-stats packet to the server
                 _LOGGER.debug("Sending latency-stats packet")
                 self.target_writer.write(bytearray(latency_stats_packet))
                 await self.target_writer.drain()
