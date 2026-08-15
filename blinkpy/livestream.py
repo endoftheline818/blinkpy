@@ -175,6 +175,18 @@ class BlinkLiveStream:
                 _LOGGER.debug("Last client disconnected, stopping server")
                 self.stop()
 
+    async def _read_exactly(self, size):
+        """Read exactly size bytes while tolerating normal TCP fragmentation."""
+        data = bytearray()
+        while len(data) < size:
+            chunk = await self.target_reader.read(size - len(data))
+            if not chunk:
+                raise asyncio.IncompleteReadError(bytes(data), size)
+            data.extend(chunk)
+            if len(data) < size and self.target_reader.at_eof():
+                raise asyncio.IncompleteReadError(bytes(data), size)
+        return bytes(data)
+
     async def recv(self):
         """Copy data from one reader to multiple writers."""
         try:
@@ -182,7 +194,7 @@ class BlinkLiveStream:
             while not self.target_reader.at_eof():
                 # Read the complete IMMI header. StreamReader.read() may return
                 # fewer bytes than requested when TCP data is fragmented.
-                data = await self.target_reader.readexactly(9)
+                data = await self._read_exactly(9)
 
                 # Handle the 9-byte IMMI protocol header
                 msgtype = data[0]
@@ -201,7 +213,7 @@ class BlinkLiveStream:
                     continue
 
                 # Read the complete payload for the same reason as the header.
-                data = await self.target_reader.readexactly(payload_length)
+                data = await self._read_exactly(payload_length)
 
                 # Skip packets other than msgtype 0x00 (regular video stream)
                 if msgtype != 0x00:
